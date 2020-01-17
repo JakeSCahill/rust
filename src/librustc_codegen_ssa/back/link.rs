@@ -982,10 +982,8 @@ fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
 
     let system_libs = SYSTEM_LIBS.lock().unwrap().clone();
     if let Some(compiler_libs_path) = system_libs {
-        println!("cache: hit");
         return Some(compiler_libs_path);
     } else {
-        println!("cache: miss");
         let compiler = if let Some(linker) = &sess.opts.cg.linker {
             linker.clone().into_os_string()
         } else if let Some(linker) = &sess.target.target.options.linker {
