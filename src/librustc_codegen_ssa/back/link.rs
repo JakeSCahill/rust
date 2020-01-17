@@ -977,31 +977,34 @@ fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
     use std::sync::Mutex;
 
     lazy_static::lazy_static! {
-        static ref SYSTEM_LIBS: Mutex<Option<PathBuf>> = Mutex::new(None);
+        static ref SYSTEM_LIBS: Mutex<Option<Result<PathBuf, ()>>> = Mutex::new(None);
     }
 
     let system_libs = SYSTEM_LIBS.lock().unwrap().clone();
-    if let Some(compiler_libs_path) = system_libs {
-        return Some(compiler_libs_path);
-    } else {
-        let compiler = if let Some(linker) = &sess.opts.cg.linker {
-            linker.clone().into_os_string()
-        } else if let Some(linker) = &sess.target.target.options.linker {
-            linker.into()
-        } else {
-            return None;
-        };
-        if let Ok(output) = Command::new(compiler).arg("-print-file-name=crt2.o").output() {
-            if let Some(compiler_libs_path) =
-                PathBuf::from(std::str::from_utf8(&output.stdout).unwrap()).parent()
-            {
-                let compiler_libs_path = fix_windows_verbatim_for_gcc(compiler_libs_path);
-                *SYSTEM_LIBS.lock().unwrap() = Some(compiler_libs_path.clone());
-                return Some(compiler_libs_path);
-            }
+    match system_libs {
+        Some(Ok(compiler_libs_path)) => Some(compiler_libs_path),
+        Some(Err(_)) => None,
+        _ => {
+            let compiler = if let Some(linker) = &sess.opts.cg.linker {
+                linker.clone().into_os_string()
+            } else if let Some(linker) = &sess.target.target.options.linker {
+                linker.into()
+            } else {
+                *SYSTEM_LIBS.lock().unwrap() = Some(Err(()));
+                return None;
+            };
+            if let Ok(output) = Command::new(compiler).arg("-print-file-name=crt2.o").output() {
+                if let Some(compiler_libs_path) =
+                    PathBuf::from(std::str::from_utf8(&output.stdout).unwrap()).parent()
+                {
+                    let compiler_libs_path = fix_windows_verbatim_for_gcc(compiler_libs_path);
+                    *SYSTEM_LIBS.lock().unwrap() = Some(Ok(compiler_libs_path.clone()));
+                    return Some(compiler_libs_path);
+                }
+            };
+            None
         }
     }
-    None
 }
 
 pub fn get_file_path(sess: &Session, name: &str) -> PathBuf {
