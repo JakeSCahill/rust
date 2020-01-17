@@ -985,15 +985,13 @@ fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
         Some(Ok(compiler_libs_path)) => Some(compiler_libs_path),
         Some(Err(_)) => None,
         _ => {
-            let compiler = if let Some(linker) = &sess.opts.cg.linker {
-                linker.clone().into_os_string()
-            } else if let Some(linker) = &sess.target.target.options.linker {
-                linker.into()
+            let cc = if let (linker, LinkerFlavor::Gcc) = linker_and_flavor(&sess) {
+                linker
             } else {
                 *SYSTEM_LIBS.lock().unwrap() = Some(Err(()));
                 return None;
             };
-            if let Ok(output) = Command::new(compiler).arg("-print-file-name=crt2.o").output() {
+            if let Ok(output) = Command::new(cc).arg("-print-file-name=crt2.o").output() {
                 if let Some(compiler_libs_path) =
                     PathBuf::from(std::str::from_utf8(&output.stdout).unwrap()).parent()
                 {
