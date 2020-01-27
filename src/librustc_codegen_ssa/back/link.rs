@@ -975,17 +975,20 @@ pub fn print_native_static_libs(sess: &Session, all_native_libs: &[NativeLibrary
 // We prefer system mingw-w64 libraries if they are available to avoid this issue.
 fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
     fn find_exe_in_path<P>(exe_name: P) -> Option<PathBuf>
-        where P: AsRef<Path>,
+    where
+        P: AsRef<Path>,
     {
         env::var_os("PATH").and_then(|paths| {
-            env::split_paths(&paths).filter_map(|dir| {
-                let full_path = dir.join(&exe_name);
-                if full_path.is_file() {
-                    Some(fix_windows_verbatim_for_gcc(&full_path))
-                } else {
-                    None
-                }
-            }).next()
+            env::split_paths(&paths)
+                .filter_map(|dir| {
+                    let full_path = dir.join(&exe_name);
+                    if full_path.is_file() {
+                        Some(fix_windows_verbatim_for_gcc(&full_path))
+                    } else {
+                        None
+                    }
+                })
+                .next()
         })
     }
 
@@ -1000,15 +1003,11 @@ fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
         Some(Err(_)) => None,
         _ => {
             if let (linker, LinkerFlavor::Gcc) = linker_and_flavor(&sess) {
-                let linker_path = if cfg!(windows) {
-                    linker.with_extension("exe")
-                } else {
-                    linker
-                };
+                let linker_path = if cfg!(windows) { linker.with_extension("exe") } else { linker };
                 if let Some(linker_path) = find_exe_in_path(linker_path) {
                     let mingw_arch = match &sess.target.target.arch {
                         x if x == "x86" => "i686",
-                        x => x
+                        x => x,
                     };
                     let mingw_dir = [mingw_arch, "-w64-mingw32"].concat();
                     // Here we have path/bin/gcc but we need path/
