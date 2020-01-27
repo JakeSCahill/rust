@@ -974,8 +974,22 @@ pub fn print_native_static_libs(sess: &Session, all_native_libs: &[NativeLibrary
 // (e.g. *-sys crates).
 // We prefer system mingw-w64 libraries if they are available to avoid this issue.
 fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
-    use std::sync::Mutex;
+    fn find_exe_in_path<P>(exe_name: P) -> Option<PathBuf>
+        where P: AsRef<Path>,
+    {
+        env::var_os("PATH").and_then(|paths| {
+            env::split_paths(&paths).filter_map(|dir| {
+                let full_path = dir.join(&exe_name);
+                if full_path.is_file() {
+                    Some(fix_windows_verbatim_for_gcc(&full_path))
+                } else {
+                    None
+                }
+            }).next()
+        })
+    }
 
+    use std::sync::Mutex;
     lazy_static::lazy_static! {
         static ref SYSTEM_LIBS: Mutex<Option<Result<PathBuf, ()>>> = Mutex::new(None);
     }
@@ -985,21 +999,36 @@ fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
         Some(Ok(compiler_libs_path)) => Some(compiler_libs_path),
         Some(Err(_)) => None,
         _ => {
-            let cc = if let (linker, LinkerFlavor::Gcc) = linker_and_flavor(&sess) {
-                linker
-            } else {
-                *SYSTEM_LIBS.lock().unwrap() = Some(Err(()));
-                return None;
+            if let (linker, LinkerFlavor::Gcc) = linker_and_flavor(&sess) {
+                let linker_path = if cfg!(windows) {
+                    linker.with_extension("exe")
+                } else {
+                    linker
+                };
+                if let Some(linker_path) = find_exe_in_path(linker_path) {
+                    let mingw_arch = match &sess.target.target.arch {
+                        x if x == "x86" => "i686",
+                        x => x
+                    };
+                    let mingw_dir = [mingw_arch, "-w64-mingw32"].concat();
+                    // Here we have path/bin/gcc but we need path/
+                    let mut path = linker_path;
+                    path.pop();
+                    path.pop();
+                    // Based on Clang MinGW driver
+                    let probe_path = path.join([&mingw_dir, "lib"].concat());
+                    if probe_path.exists() {
+                        *SYSTEM_LIBS.lock().unwrap() = Some(Ok(probe_path.clone()));
+                        return Some(probe_path);
+                    };
+                    let probe_path = path.join([&mingw_dir, "sys-root/mingw/lib"].concat());
+                    if probe_path.exists() {
+                        *SYSTEM_LIBS.lock().unwrap() = Some(Ok(probe_path.clone()));
+                        return Some(probe_path);
+                    };
+                };
             };
-            if let Ok(output) = Command::new(cc).arg("-print-file-name=crt2.o").output() {
-                if let Some(compiler_libs_path) =
-                    PathBuf::from(std::str::from_utf8(&output.stdout).unwrap()).parent()
-                {
-                    let compiler_libs_path = fix_windows_verbatim_for_gcc(compiler_libs_path);
-                    *SYSTEM_LIBS.lock().unwrap() = Some(Ok(compiler_libs_path.clone()));
-                    return Some(compiler_libs_path);
-                }
-            };
+            *SYSTEM_LIBS.lock().unwrap() = Some(Err(()));
             None
         }
     }
