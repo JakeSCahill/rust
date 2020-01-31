@@ -968,7 +968,81 @@ pub fn print_native_static_libs(sess: &Session, all_native_libs: &[NativeLibrary
     }
 }
 
+// Because windows-gnu target is meant to be self-contained for pure Rust code it bundles
+// own mingw-w64 libraries. These libraries are often not compatible with mingw-w64
+// installed in the system. This breaks many cases where Rust is mixed with other languages
+// (e.g. *-sys crates).
+// We prefer system mingw-w64 libraries if they are available to avoid this issue.
+fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
+    fn find_exe_in_path<P>(exe_name: P) -> Option<PathBuf>
+    where
+        P: AsRef<Path>,
+    {
+        for dir in env::split_paths(&env::var_os("PATH")?) {
+            let full_path = dir.join(&exe_name);
+            if full_path.is_file() {
+                return Some(fix_windows_verbatim_for_gcc(&full_path));
+            }
+        }
+        None
+    }
+
+    fn probe(sess: &Session) -> Option<PathBuf> {
+        if let (linker, LinkerFlavor::Gcc) = linker_and_flavor(&sess) {
+            let linker_path = if cfg!(windows) && !linker.extension().is_some() {
+                linker.with_extension("exe")
+            } else {
+                linker
+            };
+            if let Some(linker_path) = find_exe_in_path(linker_path) {
+                let mingw_arch = match &sess.target.target.arch {
+                    x if x == "x86" => "i686",
+                    x => x,
+                };
+                let mingw_dir = format!("{}-w64-mingw32", mingw_arch);
+                // Here we have path/bin/gcc but we need path/
+                let mut path = linker_path;
+                path.pop();
+                path.pop();
+                // Based on Clang MinGW driver
+                let probe_path = path.join(&mingw_dir).join("lib");
+                if probe_path.exists() {
+                    *SYSTEM_LIBS.lock().unwrap() = Some(Some(probe_path.clone()));
+                    return Some(probe_path);
+                };
+                let probe_path = path.join(&mingw_dir).join("sys-root/mingw/lib");
+                if probe_path.exists() {
+                    *SYSTEM_LIBS.lock().unwrap() = Some(Some(probe_path.clone()));
+                    return Some(probe_path);
+                };
+            };
+        };
+        *SYSTEM_LIBS.lock().unwrap() = Some(None);
+        None
+    }
+
+    use std::sync::Mutex;
+    lazy_static::lazy_static! {
+        static ref SYSTEM_LIBS: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
+    }
+
+    let system_libs = SYSTEM_LIBS.lock().unwrap().clone();
+    match system_libs {
+        Some(Some(compiler_libs_path)) => Some(compiler_libs_path),
+        Some(None) => None,
+        None => probe(sess),
+    }
+}
+
 pub fn get_file_path(sess: &Session, name: &str) -> PathBuf {
+    if sess.target.target.llvm_target.contains("windows-gnu") {
+        if let Some(compiler_libs_path) = get_crt_libs_path(sess) {
+            let file_path = compiler_libs_path.join(name);
+            if file_path.exists() {
+                return file_path;
+            }
+        }
+    }
     let fs = sess.target_filesearch(PathKind::Native);
     let file_path = fs.get_lib_path().join(name);
     if file_path.exists() {
@@ -1149,6 +1223,12 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(
 
     // target descriptor
     let t = &sess.target.target;
+
+    if sess.target.target.llvm_target.contains("windows-gnu") {
+        if let Some(compiler_libs_path) = get_crt_libs_path(sess) {
+            cmd.include_path(&compiler_libs_path);
+        }
+    }
 
     cmd.include_path(&fix_windows_verbatim_for_gcc(&lib_path));
 
